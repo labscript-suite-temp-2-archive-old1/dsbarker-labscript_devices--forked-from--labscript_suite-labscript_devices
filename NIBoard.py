@@ -11,33 +11,39 @@ class NIBoard(IntermediateDevice):
     digital_dtype = np.uint32
     clock_limit = 500e3 # underestimate I think.
     description = 'generic_NI_Board'
-    
+
     @set_passed_properties(property_names = {
-        "device_properties":["acquisition_rate", "MAX_name"]}
+        "device_properties":["sample_rate_AI", "MAX_name"]}
         )
-    def __init__(self, name, parent_device, clock_terminal, MAX_name=None, acquisition_rate=0):
-        IntermediateDevice.__init__(self, name, parent_device)
-        self.acquisition_rate = acquisition_rate
+    def __init__(self, name, parent_device, clock_terminal=None, MAX_name=None, sample_rate_AI=0, **kwargs):
+        IntermediateDevice.__init__(self, name, parent_device, **kwargs)
+        self.sample_rate_AI = sample_rate_AI
         self.clock_terminal = clock_terminal
         self.MAX_name = name if MAX_name is None else MAX_name
         self.BLACS_connection = self.MAX_name
+
+        # Now these are just defined at __init__ time
+        self.num_AO = 4
+        self.num_DO = 32
+        self.dtype_DO = np.uint32
+        self.clock_limit = 500e3
         
-    def add_device(self,output):
+    def add_device(self, output):
         # TODO: check there are no duplicates, check that connection
         # string is formatted correctly.
-        IntermediateDevice.add_device(self,output)
+        IntermediateDevice.add_device(self, output)
         
     def convert_bools_to_bytes(self,digitals):
         """converts digital outputs to an array of bitfields stored
-        as self.digital_dtype"""
-        outputarray = [0]*self.n_digitals
+        as self.dtype_DO"""
+        outputarray = [0]*self.num_DO
         for output in digitals:
             port, line = output.connection.replace('port','').replace('line','').split('/')
             port, line  = int(port),int(line)
             if port > 0:
                 raise LabscriptError('Ports > 0 on NI Boards not implemented. Please use port 0, or file a feature request at redmine.physics.monash.edu.au/labscript.')
             outputarray[line] = output.raw_output
-        bits = bitfield(outputarray,dtype=self.digital_dtype)
+        bits = bitfield(outputarray,dtype=self.dtype_DO)
         return bits
             
     def generate_code(self, hdf5_file):
@@ -46,6 +52,7 @@ class NIBoard(IntermediateDevice):
         digitals = {}
         inputs = {}
         for device in self.child_devices:
+            # TODO loop over allowed children rather than this case-by-case code
             if isinstance(device,AnalogOut):
                 analogs[device.connection] = device
             elif isinstance(device,DigitalOut):
@@ -98,7 +105,7 @@ class NIBoard(IntermediateDevice):
             self.set_property('analog_out_channels', ', '.join(analog_out_attrs), location='device_properties')
         if len(digital_out_table): # Table must be non empty
             grp.create_dataset('DIGITAL_OUTS',compression=config.compression,data=digital_out_table)
-            self.set_property('digital_lines', '/'.join((self.MAX_name,'port0','line0:%d'%(self.n_digitals-1))), location='device_properties')
+            self.set_property('digital_lines', '/'.join((self.MAX_name,'port0','line0:%d'%(self.num_DO-1))), location='device_properties')
         if len(acquisition_table): # Table must be non empty
             grp.create_dataset('ACQUISITIONS',compression=config.compression,data=acquisition_table)
             self.set_property('analog_in_channels', ', '.join(input_attrs), location='device_properties')
@@ -108,18 +115,28 @@ class NIBoard(IntermediateDevice):
 
 @runviewer_parser
 class RunviewerClass(object):
-    num_digitals = 32
     
-    def __init__(self, path, device):
+    # Todo: make me get passed "Settings" just like in blacs.
+    def __init__(self, path, device, num_DO=None):
         self.path = path
         self.name = device.name
         self.device = device
+
+        with h5py.File(self.path, 'r') as hdf5_file:
+            device_properties = labscript_utils.properties.get(hdf5_file, self.name, 'device_properties')
+            connection_table_properties = labscript_utils.properties.get(hdf5_file, self.name, 'connection_table_properties')
+        
+        if num_DO is not None:
+            self.num_DO = num_DO
+        else:
+            self.num_DO = connection_table_properties["num_DO"]
+
         
         # We create a lookup table for strings to be used later as dictionary keys.
         # This saves having to evaluate '%d'%i many many times, and makes the _add_pulse_program_row_to_traces method
         # significantly more efficient
         self.port_strings = {} 
-        for i in range(self.num_digitals):
+        for i in range(self.num_DO):
             self.port_strings[i] = 'port0/line%d'%i
             
     def get_traces(self, add_trace, clock=None):
@@ -151,14 +168,14 @@ class RunviewerClass(object):
         clock_ticks = times[clock_indices]
         
         traces = {}
-        for i in range(self.num_digitals):
+        for i in range(self.num_DO):
             traces['port0/line%d'%i] = []
         for row in digitals:
-            bit_string = np.binary_repr(row,self.num_digitals)[::-1]
-            for i in range(self.num_digitals):
+            bit_string = np.binary_repr(row,self.num_DO)[::-1]
+            for i in range(self.num_DO):
                 traces[self.port_strings[i]].append(int(bit_string[i]))
                 
-        for i in range(self.num_digitals):
+        for i in range(self.num_DO):
             traces[self.port_strings[i]] = (clock_ticks, np.array(traces[self.port_strings[i]]))
         
         for i, channel in enumerate(analog_out_channels):
