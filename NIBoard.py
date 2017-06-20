@@ -5,11 +5,6 @@ import labscript_utils.h5_lock, h5py
 import labscript_utils.properties
 
 class NIBoard(IntermediateDevice):
-    allowed_children = [AnalogOut, DigitalOut, AnalogIn]
-    n_analogs = 4
-    n_digitals = 32
-    digital_dtype = np.uint32
-    clock_limit = 500e3 # underestimate I think.
     description = 'generic_NI_Board'
 
     @set_passed_properties(property_names = {
