@@ -13,6 +13,7 @@
 
 from labscript import LabscriptError
 from labscript_devices import labscript_device, BLACS_tab, BLACS_worker, runviewer_parser
+from labscript import AnalogOut, DigitalOut, AnalogIn
 import labscript_devices.NIBoard as parent
 
 import numpy as np
@@ -23,10 +24,19 @@ import labscript_utils.properties
 @labscript_device
 class NI_PCIe_6363(parent.NIBoard):
     description = 'NI-PCIe-6363'
-    n_analogs = 4
-    n_digitals = 32
-    n_analog_ins = 32
-    digital_dtype = np.uint32
+
+    def __init__(self, name, parent_device, call_parents_add_device=False, **kwargs):
+                     
+        parent.NIBoard.__init__(self, name, parent_device, **kwargs)
+
+        self.allowed_children = [AnalogOut, DigitalOut, AnalogIn]
+        self.num_AO = 4
+        self.num_DO = 32
+        self.dtype_DO = np.uint32
+        self.num_AI = 32
+
+        # Now call this to get the clock right
+        self.parent_device.add_device(self)
 
 
 import time
@@ -109,7 +119,7 @@ class NI_PCIe_6363Tab(DeviceTab):
 @BLACS_worker
 class NiPCIe6363Worker(Worker):
     def init(self):
-        exec 'from PyDAQmx import Task, DAQmxGetSysNIDAQMajorVersion, DAQmxGetSysNIDAQMinorVersion, DAQmxGetSysNIDAQUpdateVersion' in globals()
+        exec 'from PyDAQmx import Task, DAQmxGetSysNIDAQMajorVersion, DAQmxGetSysNIDAQMinorVersion, DAQmxGetSysNIDAQUpdateVersion, DAQmxResetDevice' in globals()
         exec 'from PyDAQmx.DAQmxConstants import *' in globals()
         exec 'from PyDAQmx.DAQmxTypes import *' in globals()
         global pylab; import pylab
@@ -127,22 +137,34 @@ class NiPCIe6363Worker(Worker):
         if major.value == 14 and minor.value < 2:
             version_exception_message = 'There is a known bug with buffered shots using NI DAQmx v14.0.0. This bug does not exist on v14.2.0. You are currently using v%d.%d.%d. Please ensure you upgrade to v14.2.0 or higher.'%(major.value, minor.value, patch.value)
             raise Exception(version_exception_message)
+
+        import zprocess.locking
+        import socket
         
-        # Create task
-        self.ao_task = Task()
-        self.ao_read = int32()
-        self.ao_data = numpy.zeros((self.num['AO'],), dtype=numpy.float64)
+        # Setup lock for NIDAQmx_calls on this machine
+        key = socket.gethostname() + '-NI_DAQ_API'
+        self.NIDAQ_API_lock = zprocess.locking.Lock(key)
+
+        with self.NIDAQ_API_lock:
+            # TODO: JQI CODE HAS THE FOLLOWING AND I DON'T KNOW WHAT IT SOLVED
+            # Reset Device
+            # DAQmxResetDevice(self.MAX_name)            
         
-        # Create DO task:
-        self.do_task = Task()
-        self.do_read = int32()
-        self.do_data = numpy.zeros(self.num['DO']+self.num['PFI'],dtype=numpy.uint8)
-        
-        self.setup_static_channels()            
-        
-        #DAQmx Start Code        
-        self.ao_task.StartTask() 
-        self.do_task.StartTask()  
+            # Create task
+            self.ao_task = Task()
+            self.ao_read = int32()
+            self.ao_data = numpy.zeros((self.num['AO'],), dtype=numpy.float64)
+            
+            # Create DO task:
+            self.do_task = Task()
+            self.do_read = int32()
+            self.do_data = numpy.zeros(self.num['DO']+self.num['PFI'],dtype=numpy.uint8)
+            
+            self.setup_static_channels()            
+            
+            #DAQmx Start Code        
+            self.ao_task.StartTask() 
+            self.do_task.StartTask()  
         
     def setup_static_channels(self):
         #setup AO channels
@@ -203,6 +225,7 @@ class NiPCIe6363Worker(Worker):
             if h5_data:
                 self.buffered_using_digital = True
                 do_channels = device_properties['digital_lines']
+                # See comment above for ao_channels
                 do_bitfield = numpy.array(h5_data,dtype=numpy.uint32)
             else:
                 self.buffered_using_digital = False
@@ -212,51 +235,52 @@ class NiPCIe6363Worker(Worker):
         final_values = {} 
         # We must do digital first, so as to make sure the manual mode task is stopped, or reprogrammed, by the time we setup the AO task
         # this is because the clock_terminal PFI must be freed!
-        if self.buffered_using_digital:
-            # Expand each bitfield int into self.num['DO']
-            # (32) individual ones and zeros:
-            do_write_data = numpy.zeros((do_bitfield.shape[0],self.num['DO']),dtype=numpy.uint8)
-            for i in range(self.num['DO']):
-                do_write_data[:,i] = (do_bitfield & (1 << i)) >> i
+        with self.NIDAQ_API_lock:
+            if self.buffered_using_digital:
+                # Expand each bitfield int into self.num['DO']
+                # (32) individual ones and zeros:
+                do_write_data = numpy.zeros((do_bitfield.shape[0],self.num['DO']),dtype=numpy.uint8)
+                for i in range(self.num['DO']):
+                    do_write_data[:,i] = (do_bitfield & (1 << i)) >> i
+                    
+                self.do_task.StopTask()
+                self.do_task.ClearTask()
+                self.do_task = Task()
+                self.do_read = int32()
+        
+                self.do_task.CreateDOChan(do_channels,"",DAQmx_Val_ChanPerLine)
+                self.do_task.CfgSampClkTiming(clock_terminal,1000000,DAQmx_Val_Rising,DAQmx_Val_FiniteSamps,do_bitfield.shape[0])
+                self.do_task.WriteDigitalLines(do_bitfield.shape[0],False,10.0,DAQmx_Val_GroupByScanNumber,do_write_data,self.do_read,None)
+                self.do_task.StartTask()
                 
-            self.do_task.StopTask()
-            self.do_task.ClearTask()
-            self.do_task = Task()
-            self.do_read = int32()
+                for i in range(self.num['DO']):
+                    final_values['port0/line%d'%i] = do_write_data[-1,i]
+            else:
+                # We still have to stop the task to make the 
+                # clock flag available for buffered analog output, or the wait monitor:
+                self.do_task.StopTask()
+                self.do_task.ClearTask()
+                
+            if self.buffered_using_analog:
+                self.ao_task.StopTask()
+                self.ao_task.ClearTask()
+                self.ao_task = Task()
+                ao_read = int32()
     
-            self.do_task.CreateDOChan(do_channels,"",DAQmx_Val_ChanPerLine)
-            self.do_task.CfgSampClkTiming(clock_terminal,1000000,DAQmx_Val_Rising,DAQmx_Val_FiniteSamps,do_bitfield.shape[0])
-            self.do_task.WriteDigitalLines(do_bitfield.shape[0],False,10.0,DAQmx_Val_GroupByScanNumber,do_write_data,self.do_read,None)
-            self.do_task.StartTask()
-            
-            for i in range(self.num['DO']):
-                final_values['port0/line%d'%i] = do_write_data[-1,i]
-        else:
-            # We still have to stop the task to make the 
-            # clock flag available for buffered analog output, or the wait monitor:
-            self.do_task.StopTask()
-            self.do_task.ClearTask()
-            
-        if self.buffered_using_analog:
-            self.ao_task.StopTask()
-            self.ao_task.ClearTask()
-            self.ao_task = Task()
-            ao_read = int32()
-
-            self.ao_task.CreateAOVoltageChan(ao_channels,"",-10.0,10.0,DAQmx_Val_Volts,None)
-            self.ao_task.CfgSampClkTiming(clock_terminal,1000000,DAQmx_Val_Rising,DAQmx_Val_FiniteSamps, ao_data.shape[0])
-            
-            self.ao_task.WriteAnalogF64(ao_data.shape[0],False,10.0,DAQmx_Val_GroupByScanNumber, ao_data,ao_read,None)
-            self.ao_task.StartTask()   
-            
-            # Final values here are a dictionary of values, keyed by channel:
-            channel_list = [channel.split('/')[1] for channel in ao_channels.split(', ')]
-            for channel, value in zip(channel_list, ao_data[-1,:]):
-                final_values[channel] = value
-        else:
-            # we should probabaly still stop the task (this makes it easier to setup the task later)
-            self.ao_task.StopTask()
-            self.ao_task.ClearTask()
+                self.ao_task.CreateAOVoltageChan(ao_channels,"",-10.0,10.0,DAQmx_Val_Volts,None)
+                self.ao_task.CfgSampClkTiming(clock_terminal,1000000,DAQmx_Val_Rising,DAQmx_Val_FiniteSamps, ao_data.shape[0])
+                
+                self.ao_task.WriteAnalogF64(ao_data.shape[0],False,10.0,DAQmx_Val_GroupByScanNumber, ao_data,ao_read,None)
+                self.ao_task.StartTask()   
+                
+                # Final values here are a dictionary of values, keyed by channel:
+                channel_list = [channel.split('/')[1] for channel in ao_channels.split(', ')]
+                for channel, value in zip(channel_list, ao_data[-1,:]):
+                    final_values[channel] = value
+            else:
+                # we should probabaly still stop the task (this makes it easier to setup the task later)
+                self.ao_task.StopTask()
+                self.ao_task.ClearTask()
                 
        
             
@@ -483,7 +507,7 @@ class NiPCIe6363AcquisitionWorker(Worker):
             self.clock_terminal = connection_table_properties['clock_terminal']            
             if 'analog_in_channels' in device_properties:
                 h5_chnls = device_properties['analog_in_channels'].split(', ')
-                self.buffered_rate = device_properties['acquisition_rate']
+                self.buffered_rate = device_properties['sample_rate_AI']
             else:
                self.logger.debug("no input channels")
         # combine static channels with h5 channels (using a set to avoid duplicates)
@@ -833,5 +857,7 @@ class NiPCIe6363WaitMonitorWorker(Worker):
     
 @runviewer_parser
 class RunviewerClass(parent.RunviewerClass):
-    num_digitals = 32
+    def __init__(self, *args, **kwargs):
+        kwargs["num_DO"]=32
+        parent.RunviewerClass.__init__(self, *args, **kwargs)
     
