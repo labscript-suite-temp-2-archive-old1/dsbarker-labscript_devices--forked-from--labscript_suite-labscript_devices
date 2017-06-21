@@ -104,7 +104,6 @@ class NI_DAQmx(parent.NIBoard):
         self.parent_device.add_device(self)
 
     def generate_code(self, hdf5_file):
-    def generate_code(self, hdf5_file):
 
         IntermediateDevice.generate_code(self, hdf5_file)
         analogs = {}
