@@ -14,7 +14,7 @@
 from labscript_devices import labscript_device, BLACS_tab, BLACS_worker
 from labscript import StaticAnalogQuantity, Device, LabscriptError, set_passed_properties
 import numpy as np
-import visa
+#import visa
 
 @labscript_device
 class GP370(Device):    
@@ -103,18 +103,16 @@ class GP370Worker(Worker):
     
     def transition_to_buffered(self, device_name, h5file, initial_values, fresh):
         self.h5file = h5file
-        with h5py.File(self.h5file) as hdf5_file:
-            group = hdf5_file.create_group('/data/' + device_name)
-            gp370data = group.create_dataset('Pressure', (2,))
-            gp370data[0] = self.read_pressure()
+        self.init_pressure = self.read_pressure()
         self.device_name = device_name
         return {}
     
     def transition_to_manual(self):
+        self.final_pressure = self.read_pressure()
+        p_data = np.array([self.init_pressure, self.final_pressure])
         with h5py.File(self.h5file) as hdf5_file:
-            group = hdf5_file['/data/'+ device_name]
-            gp370data = group.require_dataset('Pressure')
-            gp370data[1] = self.read_pressure()
+            group = hdf5_file.create_group('/data/'+ self.device_name)
+            group.create_dataset('Pressure', data = p_data)
         return True
     
     def abort_buffered(self):
