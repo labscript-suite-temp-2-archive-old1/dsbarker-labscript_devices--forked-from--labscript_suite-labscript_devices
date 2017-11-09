@@ -379,13 +379,7 @@ class NiPCIe6363AcquisitionWorker(Worker):
                     try:
                         error = "Task did not return an error, but it should have"
                         acquisition_timeout = 5
-                        error = self.task.ReadAnalogF64(self.samples_per_channel,
-                                                        acquisition_timeout,
-                                                        DAQmx_Val_GroupByChannel,
-                                                        self.ai_data,
-                                                        self.samples_per_channel*len(chnl_list),
-                                                        byref(self.ai_read),
-                                                        None)
+                        error = self.task.ReadAnalogF64(self.samples_per_channel,acquisition_timeout,DAQmx_Val_GroupByChannel,self.ai_data,self.samples_per_channel*len(chnl_list),byref(self.ai_read),None)
                         #logger.debug('Reading complete')
                         if error is not None and error != 0:
                             if error < 0:
@@ -510,8 +504,7 @@ class NiPCIe6363AcquisitionWorker(Worker):
             group =  hdf5_file['/devices/'+device_name]
             device_properties = labscript_utils.properties.get(hdf5_file, device_name, 'device_properties')
             connection_table_properties = labscript_utils.properties.get(hdf5_file, device_name, 'connection_table_properties')
-            self.clock_terminal = connection_table_properties['clock_terminal_AI']            
-
+            self.clock_terminal = connection_table_properties['clock_terminal']            
             if 'analog_in_channels' in device_properties:
                 h5_chnls = device_properties['analog_in_channels'].split(', ')
                 self.buffered_rate = device_properties['sample_rate_AI']
