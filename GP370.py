@@ -24,8 +24,9 @@ class GP370(Device):
         self.BLACS_connection = visa_resource
         
     def generate_code(self, hdf5_file):
-        pass
-        
+        self.init_device_group(hdf5_file) # Initialize group to ensure transition_to_buffered
+                                          # occurs.
+    
 
 import os
 
@@ -93,25 +94,28 @@ class GP370Worker(Worker):
         # while response is not None:
         #    response = self.connection.query()
     
-    def program_manual(self,values):
-        pass
+    def program_manual(self, values):
+        return {} # Return empty dict since there are no values.
     
     def read_pressure(self):
         return float(self.connection.query('DS IG'))
         # TODO: some basic error checking
     
-    def transition_to_buffered(self,device_name,h5file):
-        return True
+    def transition_to_buffered(self, device_name, h5file, initial_values, fresh):
+        self.h5file = h5file
+        with h5py.File(self.h5file) as hdf5_file:
+            group = hdf5_file.create_group('/data/' + device_name)
+            gp370data = group.create_dataset('Pressure', (2,))
+            gp370data[0] = self.read_pressure()
+        self.device_name = device_name
+        return {}
     
-    def transition_to_manual(self,device_name,h5file):
-        with h5py.File(self.h5file,'a') as hdf5_file:
-            try:
-                gp370data = hdf5_file['/data/'+ self.device_name]
-            except:
-                # Group doesn't exist yet, create it:
-                gp370data = hdf5_file.create_group('/data/' + self.device_name)
-                
-            gp370data.createdataset('pressure',data=self.read_pressure())
+    def transition_to_manual(self):
+        with h5py.File(self.h5file) as hdf5_file:
+            group = hdf5_file['/data/'+ device_name]
+            gp370data = group.require_dataset('Pressure')
+            gp370data[1] = self.read_pressure()
+        return True
     
     def abort_buffered(self):
         return True
@@ -121,3 +125,4 @@ class GP370Worker(Worker):
     
     def shutdown(self):
         self.connection.close()
+        return
