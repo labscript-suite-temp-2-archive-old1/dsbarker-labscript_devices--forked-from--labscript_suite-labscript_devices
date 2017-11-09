@@ -11,6 +11,7 @@
 #                                                                   #
 #####################################################################
 
+from __future__ import division
 from labscript import LabscriptError, set_passed_properties, config
 from labscript import IntermediateDevice, AnalogOut, StaticAnalogOut, DigitalOut, StaticDigitalOut, AnalogIn
 from labscript_devices import labscript_device, BLACS_tab, BLACS_worker, runviewer_parser
@@ -336,7 +337,7 @@ class Ni_DAQmxWorker(Worker):
         # TODO: Currently labscript only supports one DO port, easy to add more
         # by passing a suitable structure of DO ports
         # I verified above that num['num_DO'] is a factor of 8
-        for i in range(self.num['num_DO']/8):
+        for i in range(int(self.num['num_DO']/8)):
             self.do_task.CreateDOChan(self.MAX_name+"/port0/line%d:%d"%(8*i,8*i+7),"", DAQmx_Val_ChanForAllLines)
         
         # currently do not allow direct access to PFI ports.  In the future can refer to NU_USB6346 code for an example
@@ -878,7 +879,7 @@ class Ni_DAQmxAcquisitionWorker(Worker):
                 times = numpy.linspace(acquisition_start_time, acquisition_end_time, 
                                        end_index-start_index+1,
                                        endpoint=True)
-                values = self.buffered_data[connection][start_index:end_index+1]
+                values = self.buffered_data[connection][int(start_index):int(end_index+1)]
                 dtypes = [('t', numpy.float64),('values', numpy.float32)]
                 data = numpy.empty(len(values),dtype=dtypes)
                 data['t'] = times
