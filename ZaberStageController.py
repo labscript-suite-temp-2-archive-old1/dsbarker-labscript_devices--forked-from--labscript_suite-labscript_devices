@@ -15,7 +15,7 @@ from labscript_utils import PY2
 if PY2:
     str = unicode
 
-from labscript_utils.horrible_dtypes_hack import dtypeslist2dict
+from labscript_utils.numpy_dtype_workaround import dtype_workaround
 from labscript_devices import labscript_device, BLACS_tab, BLACS_worker
 from labscript import StaticAnalogQuantity, Device, LabscriptError, set_passed_properties
 import numpy as np
@@ -62,7 +62,7 @@ class ZaberStageController(Device):
                 raise LabscriptError('%s %s has invalid connection number: %s'%(stage.description,stage.name,str(stage.connection)))
             data_dict[str(stage.connection)] = value
         dtypes = [(conn, int) for conn in data_dict]
-        data_array = np.zeros(1, dtype=dtypeslist2dict(dtypes))
+        data_array = np.zeros(1, dtype=dtype_workaround(dtypes))
         for conn in data_dict:
             data_array[0][conn] = data_dict[conn] 
         grp = hdf5_file.create_group('/devices/'+self.name)
