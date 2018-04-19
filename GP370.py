@@ -27,7 +27,6 @@ class GP370(Device):
         self.init_device_group(hdf5_file) # Initialize group to ensure transition_to_buffered
                                           # occurs.
 
-
 import os
 
 from qtutils.qt.QtCore import *
@@ -91,6 +90,7 @@ class GP370Worker(Worker):
         global threading; import threading
 
         self.connection = visa.ResourceManager().open_resource(self.visa_resource)
+        self.connection.timeout = 800 # set timeout in ms
 
         # On initilaization, do we wan to check for response?
         # response = True
@@ -101,12 +101,18 @@ class GP370Worker(Worker):
         return {} # Return empty dict since there are no values.
 
     def read_pressure(self):
-        return float(self.connection.query('DS IG'))
+        return np.float32(self.connection.query('DS IG'))
         # TODO: some basic error checking
 
     def transition_to_buffered(self, device_name, h5file, initial_values, fresh):
         self.h5file = h5file
-        self.init_pressure = self.read_pressure()
+        try:
+            self.init_pressure = self.read_pressure()
+        except visa.VisaIOError as e:
+            if str(e).startswith('VI_ERROR_TMO'):
+                self.init_pressure = np.nan
+            else:
+                raise e
         self.device_name = device_name
         self.comm_queue = Queue.Queue()
         self.results_queue = Queue.Queue()
@@ -119,12 +125,25 @@ class GP370Worker(Worker):
     def transition_to_manual(self):
         self.comm_queue.put('exit')
         timed_data = self.results_queue.get(timeout=2)
-        self.final_pressure = self.read_pressure()
+        try:
+            self.final_pressure = self.read_pressure()
+        except visa.VisaIOError as e:
+            if str(e).startswith('VI_ERROR_TMO'):
+                self.final_pressure = np.nan
+            else:
+                raise e
         p_data = np.array([self.init_pressure, self.final_pressure])
         with h5py.File(self.h5file) as hdf5_file:
             group = hdf5_file.create_group('/data/'+ self.device_name)
             group.create_dataset('Pressure', data = p_data)
-            dset = group.create_dataset('Timed_Pressure', (timed_data['t'].shape[0],), dtype = np.dtype([("t", np.float32), ("values", np.float32)]))
+            try:
+                measurements = hdf5_file['/data/traces']
+            except:
+                # Group doesn't exist yet, create it:
+                measurements = hdf5_file.create_group('/data/traces')
+            dset = measurements.create_dataset('Pressures', \
+            (timed_data['t'].shape[0],), dtype = \
+            np.dtype([("t", np.float32), ("values", np.float32)]))
             dset['t'] = timed_data['t']
             dset['values'] = timed_data['values']
         self.read_thread.join(1.0)
@@ -145,9 +164,15 @@ class GP370Worker(Worker):
         pressures = []
         times = []
         while command_queue.empty():
-            pressures.append(self.read_pressure())
-            times.append(time.time()-start_time)
-            time.sleep(1)
+            try:
+                pressures.append(self.read_pressure())
+                times.append(time.time()-start_time)
+            except visa.VisaIOError as e:
+                if str(e).startswith('VI_ERROR_TMO'):
+                    pass
+                else:
+                    raise e
+            time.sleep(0.5)
         p_return = np.array(pressures)
         t_return = np.array(times)
         data_return = {'t' : t_return, 'values' : p_return}
