@@ -11,6 +11,10 @@
 #                                                                   #
 #####################################################################
 
+from __future__ import print_function, division, unicode_literals, absolute_import
+from labscript_utils import PY2
+if PY2:
+    str = unicode
 from labscript_devices import labscript_device, BLACS_tab, BLACS_worker
 from labscript import StaticAnalogQuantity, Device, LabscriptError, set_passed_properties
 import numpy as np
