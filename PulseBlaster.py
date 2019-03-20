@@ -10,7 +10,12 @@
 # file in the root of the project for the full license.             #
 #                                                                   #
 #####################################################################
-from labscript_devices import labscript_device, BLACS_tab, BLACS_worker, runviewer_parser
+from __future__ import division, unicode_literals, print_function, absolute_import
+from labscript_utils import PY2
+if PY2:
+    str = unicode
+
+from labscript_devices import BLACS_tab, runviewer_parser
 
 from labscript import Device, PseudoclockDevice, Pseudoclock, ClockLine, IntermediateDevice, DigitalQuantity, DigitalOut, DDS, config, LabscriptError, set_passed_properties
 
@@ -63,8 +68,8 @@ def stop_profile(name):
     profiles[name]['min'] = profiles[name]['min'] if profiles[name]['min'] is not None and profiles[name]['min'] < runtime else runtime
     profiles[name]['max'] = profiles[name]['max'] if profiles[name]['max'] > runtime else runtime
     profiles[name]['average_time_per_call'] = profiles[name]['total_time']/profiles[name]['num_calls']
-          
-@labscript_device          
+
+
 class PulseBlaster(PseudoclockDevice):
     
     pb_instructions = {'CONTINUE':   0,
@@ -699,7 +704,7 @@ class PulseBlasterTab(DeviceTab):
         # PulseBlasterDirectOutputs
         if parent_device_name == self.device_name:
             device = self.connection_table.find_by_name(self.device_name)
-            pseudoclock = device.child_list[device.child_list.keys()[0]] # there should always be one (and only one) child, the Pseudoclock
+            pseudoclock = device.child_list[list(device.child_list.keys())[0]] # there should always be one (and only one) child, the Pseudoclock
             clockline = None
             for child_name, child in pseudoclock.child_list.items():
                 # store a reference to the internal clockline
@@ -711,7 +716,7 @@ class PulseBlasterTab(DeviceTab):
                 
             if clockline is not None:
                 # There should only be one child of this clock line, the direct outputs
-                direct_outputs = clockline.child_list[clockline.child_list.keys()[0]] 
+                direct_outputs = clockline.child_list[list(clockline.child_list.keys())[0]]
                 # look to see if the port is used by a child of the direct outputs
                 return DeviceTab.get_child_from_connection_table(self, direct_outputs.name, port)
             else:
@@ -783,12 +788,11 @@ class PulseBlasterTab(DeviceTab):
         self.statemachine_timeout_add(100,self.status_monitor,notify_queue)
 
 
-@BLACS_worker        
 class PulseblasterWorker(Worker):
     def init(self):
         from labscript_utils import check_version
-        check_version('spinapi', '3.1.1', '4')
-        exec 'from spinapi import *' in globals()
+        check_version('spinapi', '3.2.0', '4')
+        exec('from spinapi import *', globals())
         global h5py; import labscript_utils.h5_lock, h5py
         global zprocess; import zprocess
         
@@ -813,8 +817,10 @@ class PulseblasterWorker(Worker):
         pb_core_clock(75)
         
         # This is only set to True on a per-shot basis, so set it to False
-        # for manual mode
+        # for manual mode. Set associated attributes to None:
         self.time_based_stop_workaround = False
+        self.time_based_shot_duration = None
+        self.time_based_shot_end_time = None
 
     def program_manual(self,values):
     
@@ -953,9 +959,7 @@ class PulseblasterWorker(Worker):
             
                 self.smart_cache['ready_to_go'] = True
                 self.smart_cache['initial_values'] = initial_values
-                # Line zero is a wait on the final state of the program:
-                pb_inst_dds2(freqreg0,phasereg0,ampreg0,en0,0,freqreg1,phasereg1,ampreg1,en1,0,flags,WAIT,0,100)
-                
+
                 # create initial flags string
                 # NOTE: The spinapi can take a string or integer for flags.
                 # If it is a string: 
@@ -973,6 +977,14 @@ class PulseblasterWorker(Worker):
                         initial_flags += '1'
                     else:
                         initial_flags += '0'
+
+                if self.programming_scheme == 'pb_start/BRANCH':
+                    # Line zero is a wait on the final state of the program in 'pb_start/BRANCH' mode 
+                    pb_inst_dds2(freqreg0,phasereg0,ampreg0,en0,0,freqreg1,phasereg1,ampreg1,en1,0,flags,WAIT,0,100)
+                else:
+                    # Line zero otherwise just contains the initial state 
+                    pb_inst_dds2(0,0,0,initial_values['dds 0']['gate'],0,0,0,0,initial_values['dds 1']['gate'],0,initial_flags, CONTINUE, 0, 100)
+
                 # Line one is a continue with the current front panel values:
                 pb_inst_dds2(0,0,0,initial_values['dds 0']['gate'],0,0,0,0,initial_values['dds 1']['gate'],0,initial_flags, CONTINUE, 0, 100)
                 # Now the rest of the program:
@@ -1003,7 +1015,7 @@ class PulseblasterWorker(Worker):
                              'dds 1':{'freq':finalfreq1, 'amp':finalamp1, 'phase':finalphase1, 'gate':en1},
                             }
             # Since we are converting from an integer to a binary string, we need to reverse the string! (see notes above when we create flags variables)
-            return_flags = bin(flags)[2:].rjust(12,'0')[::-1]
+            return_flags = str(bin(flags)[2:]).rjust(12,'0')[::-1]
             for i in range(12):
                 return_values['flag %d'%i] = return_flags[i]
                 
@@ -1016,7 +1028,7 @@ class PulseblasterWorker(Worker):
                 self.waits_pending = False
             except zprocess.TimeoutError:
                 pass
-        if self.time_based_stop_workaround:
+        if self.time_based_shot_end_time is not None:
             import time
             time_based_shot_over = time.time() > self.time_based_shot_end_time
         else:
@@ -1035,8 +1047,10 @@ class PulseblasterWorker(Worker):
             done_condition = time_based_shot_over
             
         # This is only set to True on a per-shot basis, so reset it to False
-        # for manual mode
+        # for manual mode. Reset associated attributes to None:
         self.time_based_stop_workaround = False
+        self.time_based_shot_duration = None
+        self.time_based_shot_end_time = None
         
         if done_condition and not waits_pending:
             return True
@@ -1171,7 +1185,7 @@ class PulseBlasterParser(object):
                     
             else: # Continue
                 if row['inst'] == 8: #WAIT
-                    print 'Wait at %.9f'%t
+                    print('Wait at %.9f'%t)
                     pass
                 clock.append(t)
                 self._add_pulse_program_row_to_traces(traces,row,dds)
@@ -1184,7 +1198,7 @@ class PulseBlasterParser(object):
             
             i += 1            
                 
-        print 'Stop time: %.9f'%t 
+        print('Stop time: %.9f'%t)
         # now put together the traces
         to_return = {}
         clock = np.array(clock, dtype=np.float64)
