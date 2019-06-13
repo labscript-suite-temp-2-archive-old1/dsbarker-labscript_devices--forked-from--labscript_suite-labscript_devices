@@ -199,11 +199,13 @@ class NI_DAQmxOutputWorker(Worker):
         # Check if DOs are all zero for the whole shot. If they are this triggers a
         # bug in NI-DAQmx that throws a cryptic error for buffered output. In this
         # case, run it as a non-buffered task.
-        self.all_zero = all(DO_table[port].sum() == 0 for port in DO_table.dtype.names)
-        if self.all_zero:
+        self.DO_all_zero = all(
+            DO_table[port].sum() == 0 for port in DO_table.dtype.names
+        )
+        if self.DO_all_zero:
             DO_table = DO_table[0:1]
 
-        if self.static_DO or self.all_zero:
+        if self.static_DO or self.DO_all_zero:
             # Static DO. Start the task and write data, no timing configuration.
             self.DO_task.StartTask()
             # Write data for each port:
@@ -276,7 +278,14 @@ class NI_DAQmxOutputWorker(Worker):
         # And convert to 64 bit floats:
         AO_table = AO_table.astype(np.float64)
 
-        if self.static_AO:
+        # Check if AOs are all zero for the whole shot. If they are this triggers a
+        # bug in NI-DAQmx that throws a cryptic error for buffered output. In this
+        # case, run it as a non-buffered task.
+        self.AO_all_zero = all(AO_table.flatten() == 0)
+        if self.AO_all_zero:
+            AO_table = AO_table[0:1]
+
+        if self.static_AO or self.AO_all_zero:
             # Static AO. Start the task and write data, no timing configuration.
             self.AO_task.StartTask()
             self.AO_task.WriteAnalogF64(
@@ -350,10 +359,10 @@ class NI_DAQmxOutputWorker(Worker):
         samples = uInt64()
         tasks = []
         if self.AO_task is not None:
-            tasks.append([self.AO_task, self.static_AO, 'AO'])
+            tasks.append([self.AO_task, self.static_AO or self.AO_all_zero, 'AO'])
             self.AO_task = None
         if self.DO_task is not None:
-            tasks.append([self.DO_task, self.static_DO or self.all_zero, 'DO'])
+            tasks.append([self.DO_task, self.static_DO or self.DO_all_zero, 'DO'])
             self.DO_task = None
 
         for task, static, name in tasks:
@@ -468,16 +477,14 @@ class NI_DAQmxAcquisitionWorker(Worker):
         if self.task is not None:
             raise RuntimeError('Task already running')
 
-        num_chans = len(chans)
-
-        if num_chans < 1:
+        if chans is None:
             return
 
         # Get data MAX_READ_PTS points at a time or once every MAX_READ_INTERVAL
         # seconds, whichever is faster:
         num_samples = min(self.MAX_READ_PTS, int(rate * self.MAX_READ_INTERVAL))
 
-        self.read_array = np.zeros((num_samples, num_chans), dtype=np.float64)
+        self.read_array = np.zeros((num_samples, len(chans)), dtype=np.float64)
         self.task = Task()
 
         for chan in chans:
@@ -508,16 +515,15 @@ class NI_DAQmxAcquisitionWorker(Worker):
 
     def stop_task(self):
         with self.tasklock:
-            if len(self.buffered_chans) and self.task is None:
+            if self.task is None:
                 raise RuntimeError('Task not running')
-            if self.task is not None:
-                # Read remaining data:
-                self.read(self.task, None, -1)
-                # Stop the task:
-                self.task.StopTask()
-                self.task.ClearTask()
-                self.task = None
-                self.read_array = None
+            # Read remaining data:
+            self.read(self.task, None, -1)
+            # Stop the task:
+            self.task.StopTask()
+            self.task.ClearTask()
+            self.task = None
+            self.read_array = None
 
     def transition_to_buffered(self, device_name, h5file, initial_values, fresh):
         self.logger.debug('transition_to_buffered')
@@ -533,7 +539,8 @@ class NI_DAQmxAcquisitionWorker(Worker):
 
         chans = [_ensure_str(c) for c in AI_table['connection']]
         # Remove duplicates and sort:
-        self.buffered_chans = sorted(set(chans), key=split_conn_AI)
+        if chans:
+            self.buffered_chans = sorted(set(chans), key=split_conn_AI)
         self.h5_file = h5file
         self.buffered_rate = device_properties['acquisition_rate']
         self.acquired_data = []
@@ -551,8 +558,8 @@ class NI_DAQmxAcquisitionWorker(Worker):
         # there were no acuisitions this shot.
         if not self.buffered_mode:
             return True
-
-        self.stop_task()
+        if self.buffered_chans is not None:
+            self.stop_task()
         self.buffered_mode = False
         self.logger.info('transitioning to manual mode, task stopped')
         self.start_task(self.manual_mode_chans, self.manual_mode_rate)
@@ -569,7 +576,7 @@ class NI_DAQmxAcquisitionWorker(Worker):
             data_group.create_group(self.device_name)
             waits_in_use = len(hdf5_file['waits']) > 0
 
-        if len(self.buffered_chans) and not self.acquired_data:
+        if self.buffered_chans is not None and not self.acquired_data:
             msg = """No data was acquired. Perhaps the acquisition task was not
                 triggered to start, is the device connected to a pseudoclock?"""
             raise RuntimeError(dedent(msg))
