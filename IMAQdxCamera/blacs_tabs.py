@@ -15,6 +15,7 @@ import os
 import json
 from time import perf_counter
 import ast
+from queue import Empty
 
 import labscript_utils.h5_lock
 import h5py
@@ -72,11 +73,23 @@ class ImageReceiver(ZMQServer):
         self.last_frame_time = this_frame_time
         # Wait for the previous update to compete so we don't accumulate a backlog:
         if self.update_event is not None:
-            self.update_event.get()
+            while True:
+                # Don't block, and check for self.stopping regularly in case we are
+                # shutting down. Otherwise if shutdown is called from the main thread we
+                # would deadlock.
+                try:
+                    self.update_event.get(timeout=0.1)
+                    break
+                except Empty:
+                    if self.stopping:
+                        return
         self.update_event = inmain_later(self.update, image, self.frame_rate)
         return [b'ok']
 
     def update(self, image, frame_rate):
+        if not self.mainloop_thread.is_alive():
+            # We have been shut down. Nothing to do here.
+            return
         if self.image_view.image is None:
             # First time setting an image. Do autoscaling etc:
             self.image_view.setImage(image.T)
@@ -92,6 +105,10 @@ class IMAQdxCameraTab(DeviceTab):
     # Subclasses may override this if all they do is replace the worker class with a
     # different one:
     worker_class = 'labscript_devices.IMAQdxCamera.blacs_workers.IMAQdxCameraWorker' 
+    # Subclasses may override this to False if camera attributes should be set every
+    # shot even if the same values have previously been set:
+    use_smart_programming = True
+
     def initialise_GUI(self):
         layout = self.get_tab_layout()
         ui_filepath = os.path.join(
@@ -143,6 +160,8 @@ class IMAQdxCameraTab(DeviceTab):
         # Start the image receiver ZMQ server:
         self.image_receiver = ImageReceiver(self.image, self.ui.label_fps)
         self.acquiring = False
+
+        self.supports_smart_programming(self.use_smart_programming) 
 
     def get_save_data(self):
         return {
