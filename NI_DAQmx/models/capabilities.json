@@ -388,6 +388,34 @@
         "supports_buffered_DO": false,
         "supports_semiperiod_measurement": false
     },
+    "USB-6211": {
+        "AI_range": [
+            -10.0,
+            10.0
+        ],
+        "AI_start_delay": 2.5e-07,
+        "AO_range": [
+            -10.0,
+            10.0
+        ],
+        "max_AI_multi_chan_rate": 250000.0,
+        "max_AI_single_chan_rate": 250000.0,
+        "max_AO_sample_rate": 250000.0,
+        "max_DO_sample_rate": null,
+        "min_semiperiod_measurement": 1e-07,
+        "num_AI": 16,
+        "num_AO": 2,
+        "num_CI": 2,
+        "ports": {
+            "port1": {
+                "num_lines": 4,
+                "supports_buffered": false
+            }
+        },
+        "supports_buffered_AO": true,
+        "supports_buffered_DO": false,
+        "supports_semiperiod_measurement": true
+    },
     "USB-6229": {
         "AI_range": [
             -10.0,
